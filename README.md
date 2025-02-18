@@ -2,6 +2,8 @@
 
 Tampermonkey script + Cloudflare Worker combo for downloading media from X (Twitter)
 
+Inspired from https://github.com/imputnet/cobalt
+
 ## Features
 
 - 🎥 One-click video/download button on X tweets
