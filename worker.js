@@ -37,10 +37,10 @@ const CONFIG = {
     withGrokAnalyze: false,
   }),
   genericUserAgent:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
   commonHeaders: {
     "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
     authorization:
       "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
     "x-twitter-client-language": "en",
@@ -104,7 +104,9 @@ const tokenManager = new TokenManager();
  */
 class MediaExtractor {
   static needsFixing(media) {
-    const repId = media.source_status_id_str || media.id_str;
+    const repId = media.source_status_id_str ?? media.id_str;
+    if (!repId) return false;
+    console.log("repId", repId);
     const mediaTimestamp = new Date(
       Number((BigInt(repId) >> 22n) + CONFIG.TWITTER_EPOCH)
     );
@@ -121,6 +123,7 @@ class MediaExtractor {
     if (!mp4Variants.length) {
       throw new Error("No MP4 video variants available");
     }
+    console.log("variants", mp4Variants);
     return mp4Variants.reduce((a, b) =>
       Number(a.bitrate) > Number(b.bitrate) ? a : b
     ).url;
@@ -214,7 +217,6 @@ async function rateLimitMiddleware(request, env, next) {
 
   const rawTtl = Math.ceil((data.reset - now) / 1000);
   const ttl = Math.max(rawTtl, 60);
-  // Please name the kv variable to RATE_LIMIT_KV in the setting page of the Cloudflare worker
   await env.RATE_LIMIT_KV.put(key, JSON.stringify(data), { expirationTtl: ttl });
 
   if (data.count > limit) {
@@ -226,6 +228,25 @@ async function rateLimitMiddleware(request, env, next) {
   }
 
   return next();
+}
+
+async function requestSyndication(tweetId) {
+  // https://github.com/yt-dlp/yt-dlp/blob/05c8023a27dd37c49163c0498bf98e3e3c1cb4b9/yt_dlp/extractor/twitter.py#L1334
+  const token = (id) => ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+  const syndicationUrl = new URL("https://cdn.syndication.twimg.com/tweet-result");
+
+  syndicationUrl.searchParams.set("id", tweetId);
+  syndicationUrl.searchParams.set("token", token(tweetId));
+
+  const result = await fetch(syndicationUrl, {
+    method: "GET",
+    headers: {
+      "user-agent": CONFIG.genericUserAgent,
+      "content-type": "application/json"
+    }
+  });
+  // console.log("syndication", await result.json());
+  return result;
 }
 
 /**
@@ -241,29 +262,40 @@ async function handleRequest(request, env) {
     const tweetId = extractTweetId(tweetParam) || tweetParam;
     const indexParam = searchParams.get("index");
     const mediaIndex = indexParam ? parseInt(indexParam, 10) : 0;
+    let syndication = false;
 
     let guestToken = await tokenManager.getToken();
     if (!guestToken) {
       return createErrorResponse(500, "Failed to obtain guest token");
     }
-
+    console.log(`guest token: ${guestToken}`);
     let tweetRes = await requestTweet(tweetId, guestToken);
+
     if ([403, 429].includes(tweetRes.status)) {
       guestToken = await tokenManager.getToken(true);
       tweetRes = await requestTweet(tweetId, guestToken);
     }
+
+    // if graphql requests fail, then resort to tweet embed api
     if (!tweetRes.ok) {
-      return createErrorResponse(tweetRes.status, "Failed to fetch tweet data");
+      syndication = true;
+      tweetRes = await requestSyndication(tweetId);
+      if (!tweetRes.ok) {
+        console.log("syndication:", tweetRes);
+        return createErrorResponse(tweetRes.status, `Failed to fetch tweet data}`);
+      }
     }
 
     const tweetData = await tweetRes.json();
-    const tweetResult = tweetData?.data?.tweetResult?.result;
+    console.log("tweetData", tweetData);
+    const tweetResult = syndication ? tweetData.mediaDetails : tweetData?.data?.tweetResult?.result;
     if (!tweetResult) {
       return createErrorResponse(404, "Tweet not found or unavailable");
     }
 
     // Extract and validate media using MediaExtractor
-    const mediaItems = MediaExtractor.extractMedia(tweetResult, mediaIndex);
+
+    const mediaItems = syndication ? tweetResult : MediaExtractor.extractMedia(tweetResult, mediaIndex);
     const mediaItem = mediaItems[0];
     let mediaUrl = "";
 
@@ -277,7 +309,7 @@ async function handleRequest(request, env) {
     } else {
       return createErrorResponse(400, "Unsupported media type");
     }
-
+    console.log("mediaUrl", mediaUrl);
     // Optionally handle container bug issues.
     if (MediaExtractor.needsFixing(mediaItem)) {
       // Custom processing can be applied here if needed.
@@ -299,3 +331,4 @@ export default {
     );
   },
 };
+
