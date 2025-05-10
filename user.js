@@ -3,8 +3,8 @@
 // @namespace    https://github.com/tizee/tempermonkey-x-video-downloader
 // @version      1.0
 // @description  Download X (formerly Twitter) video via a resolver API.
-// @downloadURL  https://raw.githubusercontent.com/tizee/tempermonkey-x-video-downloader/main/user.js
-// @updateURL    https://raw.githubusercontent.com/tizee/tempermonkey-x-video-downloader/main/user.js
+// @downloadURL  https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader.tizee-tampermonkey-scripts/refs/heads/main/user.js
+// @updateURL    https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader.tizee-tampermonkey-scripts/refs/heads/main/user.js
 // @author       tizee
 // @match        https://x.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
