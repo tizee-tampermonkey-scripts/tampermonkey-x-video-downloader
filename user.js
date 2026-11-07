@@ -1,17 +1,19 @@
 // ==UserScript==
 // @name         x Video Downloader
 // @namespace    https://github.com/tizee/tempermonkey-x-video-downloader
-// @version      1.4
+// @version      1.5
 // @description  Download X (formerly Twitter) video via a resolver API.
 // @downloadURL  https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader/refs/heads/main/user.js
 // @updateURL    https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader/refs/heads/main/user.js
 // @author       tizee
 // @match        https://x.com/*
+// @connect      get-x-video.pobomp.workers.dev
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
@@ -531,6 +533,61 @@
     }
 
     /**
+     * Requests resolver metadata through Tampermonkey to bypass page CSP.
+     * @param {string} url - The resolver metadata URL.
+     * @returns {Promise<{status: number, contentType: string, text: string}>}
+     */
+    function requestResolverInfo(url) {
+        if (typeof GM_xmlhttpRequest === "function") {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url,
+                    timeout: MEDIA_INFO_TIMEOUT_MS,
+                    headers: { Accept: "application/json" },
+                    onload: (response) => {
+                        const headers = response.responseHeaders || "";
+                        const contentType =
+                            headers.match(/^content-type:\s*(.+)$/im)?.[1]?.trim() ||
+                            "";
+                        resolve({
+                            status: response.status,
+                            contentType,
+                            text: response.responseText || "",
+                        });
+                    },
+                    onerror: () =>
+                        reject(
+                            new Error(
+                                "Resolver request failed. Check @connect and the resolver URL."
+                            )
+                        ),
+                    ontimeout: () =>
+                        reject(new Error("Resolver request timed out.")),
+                    onabort: () =>
+                        reject(new Error("Resolver request aborted.")),
+                });
+            });
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(
+            () => controller.abort(),
+            MEDIA_INFO_TIMEOUT_MS
+        );
+        return fetch(url, {
+            credentials: "omit",
+            signal: controller.signal,
+        })
+            .then(async (response) => ({
+                status: response.status,
+                contentType: response.headers.get("content-type") || "",
+                text: await response.text(),
+            }))
+            .finally(() => clearTimeout(timeoutId));
+    }
+
+    /**
      * Fetches media and quality metadata for a tweet.
      * @param {string} tweetId - The tweet ID.
      * @returns {Promise<object>} The resolver media metadata.
@@ -539,41 +596,35 @@
         const cached = mediaInfoCache.get(tweetId);
         if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(
-            () => controller.abort(),
-            MEDIA_INFO_TIMEOUT_MS
+        const response = await requestResolverInfo(
+            buildResolverUrl({ tweet: tweetId, info: 1 })
         );
-        try {
-            const response = await fetch(
-                buildResolverUrl({ tweet: tweetId, info: 1 }),
-                { credentials: "omit", signal: controller.signal }
+        if (response.status < 200 || response.status >= 300) {
+            throw new Error(
+                `Resolver returned ${response.status}${response.text ? `: ${response.text}` : ""}`
             );
-            if (!response.ok) {
-                const body = await response.text().catch(() => "");
-                throw new Error(
-                    `Resolver returned ${response.status}${body ? `: ${body}` : ""}`
-                );
-            }
-
-            const contentType = response.headers.get("content-type") || "";
-            if (!contentType.includes("application/json")) {
-                throw new Error("Resolver does not support quality selection");
-            }
-
-            const data = await response.json();
-            if (!Array.isArray(data.qualities)) {
-                throw new Error("Resolver returned invalid quality metadata");
-            }
-
-            mediaInfoCache.set(tweetId, {
-                expiresAt: Date.now() + MEDIA_INFO_CACHE_TTL_MS,
-                data,
-            });
-            return data;
-        } finally {
-            clearTimeout(timeoutId);
         }
+        if (!response.contentType.includes("application/json")) {
+            throw new Error(
+                "Resolver does not support media selection. Redeploy worker.js."
+            );
+        }
+
+        let data;
+        try {
+            data = JSON.parse(response.text);
+        } catch (error) {
+            throw new Error("Resolver returned invalid JSON.");
+        }
+        if (!Array.isArray(data.qualities)) {
+            throw new Error("Resolver returned invalid media metadata.");
+        }
+
+        mediaInfoCache.set(tweetId, {
+            expiresAt: Date.now() + MEDIA_INFO_CACHE_TTL_MS,
+            data,
+        });
+        return data;
     }
 
     /**
@@ -614,9 +665,12 @@
                 showQualityMenu(button, tweetId, 0, qualities);
             }
         } catch (error) {
-            // Older workers ignore info=1 and redirect to the best variant.
-            console.warn("[x Video Downloader] Media lookup failed:", error);
-            openTweetMedia(tweetId);
+            console.error("[x Video Downloader] Media lookup failed:", error);
+            alert(
+                "Failed to load media options.\n" +
+                    `${error.message}\n\n` +
+                    "Check the resolver URL, @connect, and worker version."
+            );
         } finally {
             button.classList.remove("is-loading");
             button.removeAttribute("aria-busy");

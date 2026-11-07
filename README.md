@@ -36,6 +36,7 @@ Inspired from https://github.com/imputnet/cobalt
 3. Configure worker URL:
    - Click Tampermonkey icon > "Set x Video Resolver API URL"
    - Enter your Cloudflare Worker URL (e.g., `https://your-worker.workers.dev`)
+   - The host must match the `@connect` entry in `user.js`. Update it if you use a custom domain.
 
 ## Usage
 
@@ -52,6 +53,8 @@ Inspired from https://github.com/imputnet/cobalt
 - Rate limiting uses Cloudflare KV storage
 - Media extraction handles multiple media items and quality levels
 - Automatic guest token management
+- Metadata uses `GM_xmlhttpRequest` because x.com CSP blocks direct `fetch` to `*.workers.dev`
+- `@connect` in `user.js` must include the resolver host
 - `?tweet=<id>&info=1` returns all media and quality metadata with CORS enabled
 - `?tweet=<id>&index=<n>` selects a zero-based media index (default 0)
 - `?tweet=<id>&quality=<height>` redirects to the selected MP4 variant
@@ -69,7 +72,9 @@ Inspired from https://github.com/imputnet/cobalt
    - "Rate limit exceeded" - Wait 1 minute before new requests
    - "Failed to obtain guest token" - Worker needs re-deployment
    - "No media found" - Tweet doesn't contain downloadable media
-   - No media or quality menu - Redeploy the updated `worker.js`; the script falls back to the default media and quality on an old worker
+   - "Resolver does not support media selection" - Redeploy the updated `worker.js`
+   - No media or quality menu - Confirm `user.js` is version 1.5 or newer
+   - Metadata request fails - Check that the configured resolver host matches `@connect` in `user.js`
 
 ## License
 
