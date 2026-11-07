@@ -178,6 +178,41 @@ class MediaExtractor {
       }));
   }
 
+  static getPhotoOptions(mediaItem) {
+    const options = [];
+    const seen = new Set();
+    const addOption = (value, label, width, height) => {
+      const w = Number(width);
+      const h = Number(height);
+      if (!w || !h) return;
+
+      const key = `${w}x${h}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({
+        value,
+        label,
+        width: w,
+        height: h,
+        bitrate: 0,
+        best: options.length === 0,
+      });
+    };
+
+    const original = mediaItem.original_info;
+    const sizes = mediaItem.sizes || {};
+    addOption(
+      "orig",
+      "Original",
+      original?.width || sizes.large?.w,
+      original?.height || sizes.large?.h
+    );
+    addOption("large", "Large", sizes.large?.w, sizes.large?.h);
+    addOption("medium", "Medium", sizes.medium?.w, sizes.medium?.h);
+    addOption("small", "Small", sizes.small?.w, sizes.small?.h);
+    return options;
+  }
+
   static selectQuality(variants = [], quality = null) {
     const mp4Variants = this.getMp4Variants(variants);
     if (!mp4Variants.length) {
@@ -340,14 +375,23 @@ function buildMediaPreview(mediaUrl) {
  * Builds the media metadata returned to selection clients.
  */
 function createMediaInfo(tweetId, mediaItems, selectedIndex) {
-  const media = mediaItems.map((mediaItem, index) => ({
-    index,
-    type: mediaItem.type,
-    preview: buildMediaPreview(mediaItem.media_url_https),
-    qualities: ["video", "animated_gif"].includes(mediaItem.type)
-      ? MediaExtractor.getQualityOptions(mediaItem.video_info?.variants)
-      : [],
-  }));
+  const media = mediaItems.map((mediaItem, index) => {
+    let qualities = [];
+    if (mediaItem.type === "photo") {
+      qualities = MediaExtractor.getPhotoOptions(mediaItem);
+    } else if (["video", "animated_gif"].includes(mediaItem.type)) {
+      qualities = MediaExtractor.getQualityOptions(
+        mediaItem.video_info?.variants
+      );
+    }
+
+    return {
+      index,
+      type: mediaItem.type,
+      preview: buildMediaPreview(mediaItem.media_url_https),
+      qualities,
+    };
+  });
   const selected = media[selectedIndex];
   return {
     tweetId,
@@ -437,7 +481,23 @@ async function handleRequest(request, env) {
     }
 
     if (mediaItem.type === "photo") {
-      mediaUrl = buildNamedMediaUrl(mediaItem.media_url_https, "4096x4096");
+      const photoOptions = MediaExtractor.getPhotoOptions(mediaItem);
+      let photoSize = photoOptions[0]?.value || "4096x4096";
+      const requestedSize = qualityParam?.toLowerCase();
+      if (requestedSize && requestedSize !== "best") {
+        const selected = photoOptions.find(
+          (option) => option.value === requestedSize
+        );
+        if (!selected) {
+          return createErrorResponse(
+            400,
+            "Requested image size is not available",
+            { available: photoOptions }
+          );
+        }
+        photoSize = selected.value;
+      }
+      mediaUrl = buildNamedMediaUrl(mediaItem.media_url_https, photoSize);
       if (!mediaUrl) {
         return createErrorResponse(500, "Invalid media URL");
       }

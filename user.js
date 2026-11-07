@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         x Video Downloader
 // @namespace    https://github.com/tizee/tempermonkey-x-video-downloader
-// @version      1.5
+// @version      1.6
 // @description  Download X (formerly Twitter) video via a resolver API.
 // @downloadURL  https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader/refs/heads/main/user.js
 // @updateURL    https://raw.githubusercontent.com/tizee-tampermonkey-scripts/tampermonkey-x-video-downloader/refs/heads/main/user.js
@@ -418,9 +418,14 @@
 
             const detail = document.createElement("span");
             detail.className = "tweet-quality-option-detail";
-            const details = [formatBitrate(quality.bitrate)];
+            const details = [];
+            if (quality.width && quality.height) {
+                details.push(`${quality.width} × ${quality.height}`);
+            }
+            const bitrate = formatBitrate(quality.bitrate);
+            if (bitrate) details.push(bitrate);
             if (quality.best) details.push("Best");
-            detail.textContent = details.filter(Boolean).join(" · ");
+            detail.textContent = details.join(" · ");
 
             option.append(label, detail);
             option.addEventListener("click", (event) => {
@@ -451,9 +456,20 @@
                     : mediaItem.type === "animated_gif"
                       ? "GIF"
                       : "Video";
-            const qualityLabels = (mediaItem.qualities || [])
-                .map((quality) => quality.label)
-                .join(", ");
+            const isVideo = ["video", "animated_gif"].includes(
+                mediaItem.type
+            );
+            let qualityLabels = "";
+            if (isVideo) {
+                qualityLabels = (mediaItem.qualities || [])
+                    .map((quality) => quality.label)
+                    .join(", ");
+            } else if (mediaItem.type === "photo") {
+                const largest = mediaItem.qualities?.[0];
+                qualityLabels = largest
+                    ? `${largest.width} × ${largest.height}`
+                    : "";
+            }
 
             const option = document.createElement("button");
             option.type = "button";
@@ -503,7 +519,7 @@
     }
 
     /**
-     * Opens a selected media item, prompting for quality when needed.
+     * Opens a selected media item, prompting for size or quality when needed.
      * @param {HTMLElement} button - The download button.
      * @param {string} tweetId - The tweet ID.
      * @param {object} mediaItem - The selected media metadata.
@@ -511,14 +527,14 @@
      */
     function openSelectedMedia(button, tweetId, mediaItem, mediaCount) {
         const qualities = mediaItem.qualities || [];
-        if (
-            ["video", "animated_gif"].includes(mediaItem.type) &&
-            qualities.length > 1
-        ) {
+        const isVideo = ["video", "animated_gif"].includes(mediaItem.type);
+        if (qualities.length > 1) {
             const titleText =
                 mediaCount > 1
-                    ? `Media ${mediaItem.index + 1} quality`
-                    : "Download quality";
+                    ? `Media ${mediaItem.index + 1} ${isVideo ? "quality" : "size"}`
+                    : isVideo
+                      ? "Download quality"
+                      : "Image size";
             showQualityMenu(
                 button,
                 tweetId,

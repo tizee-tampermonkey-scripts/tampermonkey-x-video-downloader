@@ -9,6 +9,7 @@ Inspired from https://github.com/imputnet/cobalt
 - 🎥 One-click video/download button on X tweets
 - 🖼️ Select media when a tweet contains multiple photos or videos
 - 🎚️ Choose video quality from an X-style menu (for example 720p or 360p)
+- 📐 Choose image size (Original, Large, Medium, or Small)
 - 🌩️ Cloudflare Worker backend for reliable media resolution
 - 🔒 Rate limiting protection (100 requests/min per IP)
 - 📷 Supports both videos and images
@@ -45,20 +46,23 @@ Inspired from https://github.com/imputnet/cobalt
 3. Click it:
    - If the tweet has multiple media items, choose one from the media menu.
    - If the selected video has multiple qualities, choose one from the quality menu.
-   - Photos and single-quality videos open directly.
+   - If the selected photo has multiple sizes, choose one from the image size menu.
+   - Single-size photos and single-quality videos open directly.
 4. Right-click video/image to save
 
 ## Technical Notes
 
 - Rate limiting uses Cloudflare KV storage
-- Media extraction handles multiple media items and quality levels
+- Media extraction handles multiple media items, video qualities, and image sizes
 - Automatic guest token management
 - Metadata uses `GM_xmlhttpRequest` because x.com CSP blocks direct `fetch` to `*.workers.dev`
 - `@connect` in `user.js` must include the resolver host
-- `?tweet=<id>&info=1` returns all media and quality metadata with CORS enabled
+- `?tweet=<id>&info=1` returns all media, video quality, and image size metadata with CORS enabled
 - `?tweet=<id>&index=<n>` selects a zero-based media index (default 0)
 - `?tweet=<id>&quality=<height>` redirects to the selected MP4 variant
-- Without `quality`, the worker keeps returning the highest-bitrate MP4
+- `?tweet=<id>&quality=orig|large|medium|small` selects an image size
+- Photo sizes with identical dimensions are deduplicated
+- Without `quality`, the worker returns the best available media variant
 
 ## Troubleshooting
 
@@ -73,7 +77,7 @@ Inspired from https://github.com/imputnet/cobalt
    - "Failed to obtain guest token" - Worker needs re-deployment
    - "No media found" - Tweet doesn't contain downloadable media
    - "Resolver does not support media selection" - Redeploy the updated `worker.js`
-   - No media or quality menu - Confirm `user.js` is version 1.5 or newer
+   - No media, quality, or size menu - Confirm `user.js` is version 1.6 or newer
    - Metadata request fails - Check that the configured resolver host matches `@connect` in `user.js`
 
 ## License
