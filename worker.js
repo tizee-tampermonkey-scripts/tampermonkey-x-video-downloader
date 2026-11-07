@@ -54,16 +54,28 @@ const CONFIG = {
   TWITTER_EPOCH: 1288834974657n,
 };
 
+const JSON_HEADERS = {
+  "Content-Type": "application/json",
+  "Access-Control-Allow-Origin": "*",
+};
+
+/**
+ * Helper: JSON Response Builder
+ */
+function createJsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: JSON_HEADERS,
+  });
+}
+
 /**
  * Helper: Standardized Error Response Builder
  */
 function createErrorResponse(status, message, details = null) {
   const body = { error: message };
   if (details) body.details = details;
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
+  return createJsonResponse(body, status);
 }
 
 /**
@@ -116,20 +128,74 @@ class MediaExtractor {
     );
   }
 
-  static bestQuality(variants) {
-    const mp4Variants = variants.filter(
-      (v) => v.content_type === "video/mp4"
-    );
+  static getMp4Variants(variants = []) {
+    return (variants || [])
+      .filter((variant) => variant.content_type === "video/mp4")
+      .map((variant) => {
+        const match = String(variant.url || "").match(
+          /\/(\d{2,5})x(\d{2,5})\//
+        );
+        return {
+          url: variant.url,
+          bitrate: Number(variant.bitrate) || 0,
+          width: match ? Number(match[1]) : null,
+          height: match ? Number(match[2]) : null,
+        };
+      })
+      .sort((a, b) => b.bitrate - a.bitrate);
+  }
+
+  static qualityValue(variant) {
+    const width = Number(variant.width);
+    const height = Number(variant.height);
+    if (width > 0 && height > 0) return String(Math.min(width, height));
+    return String(variant.bitrate || 0);
+  }
+
+  static qualityLabel(variant) {
+    const value = this.qualityValue(variant);
+    if (variant.width && variant.height) return `${value}p`;
+    if (variant.bitrate) return `${Math.round(variant.bitrate / 1000)} kbps`;
+    return "Video";
+  }
+
+  static getQualityOptions(variants = []) {
+    const seen = new Set();
+    return this.getMp4Variants(variants)
+      .filter((variant) => {
+        const value = this.qualityValue(variant);
+        if (seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      })
+      .map((variant, index) => ({
+        value: this.qualityValue(variant),
+        label: this.qualityLabel(variant),
+        width: variant.width,
+        height: variant.height,
+        bitrate: variant.bitrate,
+        best: index === 0,
+      }));
+  }
+
+  static selectQuality(variants = [], quality = null) {
+    const mp4Variants = this.getMp4Variants(variants);
     if (!mp4Variants.length) {
       throw new Error("No MP4 video variants available");
     }
-    console.log("variants", mp4Variants);
-    return mp4Variants.reduce((a, b) =>
-      Number(a.bitrate) > Number(b.bitrate) ? a : b
-    ).url;
+
+    const requested = quality == null ? "" : String(quality).toLowerCase();
+    if (!requested || requested === "best") return mp4Variants[0];
+
+    const target = requested.replace(/p$/, "");
+    return (
+      mp4Variants.find(
+        (variant) => this.qualityValue(variant) === target
+      ) || null
+    );
   }
 
-  static extractMedia(tweetResult, mediaIndex = 0) {
+  static extractAllMedia(tweetResult) {
     let baseTweet = tweetResult.legacy;
     if (tweetResult.__typename === "TweetWithVisibilityResults") {
       baseTweet = tweetResult.tweet.legacy;
@@ -137,12 +203,9 @@ class MediaExtractor {
 
     const retweetedMedia =
       baseTweet?.retweeted_status_result?.result?.legacy?.extended_entities?.media;
-    let mediaItems = retweetedMedia || baseTweet?.extended_entities?.media;
+    const mediaItems = retweetedMedia || baseTweet?.extended_entities?.media;
     if (!mediaItems || mediaItems.length === 0) {
       throw new Error("No media found in tweet");
-    }
-    if (mediaIndex >= 0 && mediaIndex < mediaItems.length) {
-      mediaItems = [mediaItems[mediaIndex]];
     }
     return mediaItems;
   }
@@ -223,7 +286,10 @@ async function rateLimitMiddleware(request, env, next) {
     const retryAfter = Math.ceil((data.reset - now) / 1000);
     return new Response("Rate limit exceeded. Try again later.", {
       status: 429,
-      headers: { "Retry-After": retryAfter.toString() },
+      headers: {
+        "Retry-After": retryAfter.toString(),
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
 
@@ -250,6 +316,49 @@ async function requestSyndication(tweetId) {
 }
 
 /**
+ * Builds a media URL with the requested size name.
+ */
+function buildNamedMediaUrl(mediaUrl, name) {
+  if (!mediaUrl) return null;
+  try {
+    const url = new URL(mediaUrl);
+    url.searchParams.set("name", name);
+    return url.toString();
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Builds a media thumbnail URL for the media picker.
+ */
+function buildMediaPreview(mediaUrl) {
+  return buildNamedMediaUrl(mediaUrl, "small");
+}
+
+/**
+ * Builds the media metadata returned to selection clients.
+ */
+function createMediaInfo(tweetId, mediaItems, selectedIndex) {
+  const media = mediaItems.map((mediaItem, index) => ({
+    index,
+    type: mediaItem.type,
+    preview: buildMediaPreview(mediaItem.media_url_https),
+    qualities: ["video", "animated_gif"].includes(mediaItem.type)
+      ? MediaExtractor.getQualityOptions(mediaItem.video_info?.variants)
+      : [],
+  }));
+  const selected = media[selectedIndex];
+  return {
+    tweetId,
+    index: selected.index,
+    type: selected.type,
+    qualities: selected.qualities,
+    media,
+  };
+}
+
+/**
  * Core Business Logic Handler
  */
 async function handleRequest(request, env) {
@@ -262,6 +371,8 @@ async function handleRequest(request, env) {
     const tweetId = extractTweetId(tweetParam) || tweetParam;
     const indexParam = searchParams.get("index");
     const mediaIndex = indexParam ? parseInt(indexParam, 10) : 0;
+    const qualityParam = searchParams.get("quality");
+    const infoRequested = searchParams.get("info") === "1";
     let syndication = false;
 
     let guestToken = await tokenManager.getToken();
@@ -295,19 +406,58 @@ async function handleRequest(request, env) {
 
     // Extract and validate media using MediaExtractor
 
-    const mediaItems = syndication ? tweetResult : MediaExtractor.extractMedia(tweetResult, mediaIndex);
-    const mediaItem = mediaItems[0];
+    const mediaItems = syndication
+      ? tweetResult
+      : MediaExtractor.extractAllMedia(tweetResult);
+    if (!Array.isArray(mediaItems) || mediaItems.length === 0) {
+      return createErrorResponse(404, "No media found in tweet");
+    }
+    if (
+      !Number.isInteger(mediaIndex) ||
+      mediaIndex < 0 ||
+      mediaIndex >= mediaItems.length
+    ) {
+      return createErrorResponse(
+        400,
+        "Requested media index is not available",
+        { available: mediaItems.length }
+      );
+    }
+    const mediaItem = mediaItems[mediaIndex];
     let mediaUrl = "";
 
-    if (mediaItem.type === "photo") {
-      mediaUrl = `${mediaItem.media_url_https}?name=4096x4096`;
-    } else if (
-      mediaItem.type === "video" ||
-      mediaItem.type === "animated_gif"
-    ) {
-      mediaUrl = MediaExtractor.bestQuality(mediaItem.video_info.variants);
-    } else {
+    if (!["photo", "video", "animated_gif"].includes(mediaItem.type)) {
       return createErrorResponse(400, "Unsupported media type");
+    }
+
+    if (infoRequested) {
+      return createJsonResponse(
+        createMediaInfo(tweetId, mediaItems, mediaIndex)
+      );
+    }
+
+    if (mediaItem.type === "photo") {
+      mediaUrl = buildNamedMediaUrl(mediaItem.media_url_https, "4096x4096");
+      if (!mediaUrl) {
+        return createErrorResponse(500, "Invalid media URL");
+      }
+    } else {
+      const variant = MediaExtractor.selectQuality(
+        mediaItem.video_info?.variants,
+        qualityParam
+      );
+      if (!variant) {
+        return createErrorResponse(
+          400,
+          "Requested quality is not available",
+          {
+            available: MediaExtractor.getQualityOptions(
+              mediaItem.video_info?.variants
+            ),
+          }
+        );
+      }
+      mediaUrl = variant.url;
     }
     console.log("mediaUrl", mediaUrl);
     // Optionally handle container bug issues.

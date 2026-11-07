@@ -1,0 +1,12 @@
+{
+  // Cloudflare Worker deployment config.
+  "name": "get-x-video",
+  "main": "worker.js",
+  "compatibility_date": "2025-02-18",
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT_KV",
+      "id": "1e8e89f04cf847caa81e136be8e28316"
+    }
+  ]
+}
